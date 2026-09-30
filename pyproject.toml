@@ -1,0 +1,28 @@
+[project]
+name = "support-copilot"
+version = "0.1.0"
+description = "AI support copilot: Gladly webhooks -> SQS -> LLM agent (RAG + tools) -> draft notes"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "httpx>=0.27",
+    "boto3>=1.35",
+    "mangum>=0.19",
+    "openai>=1.50",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+# Kept optional so the API Lambda / CI never pull torch unless they need embeddings.
+embeddings = ["sentence-transformers>=3.0"]
+observability = ["newrelic>=10.0"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "uvicorn>=0.30"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.setuptools]
+packages = ["app"]

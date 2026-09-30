@@ -1,0 +1,101 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Support Copilot - Gladly webhook -> SQS -> LLM agent -> Gladly note
+
+Parameters:
+  LlmProvider:
+    Type: String
+    AllowedValues: [openai, bedrock]
+    Default: bedrock
+  BedrockModel:
+    Type: String
+    Default: anthropic.claude-opus-5-5  # model or inference-profile ID enabled in your account/region
+
+Globals:
+  Function:
+    PackageType: Image
+    Architectures: [x86_64]
+    Environment:
+      Variables:
+        ENV: aws
+        TABLE_NAME: !Ref Tickets
+        QUEUE_URL: !Ref Jobs
+        SECRET_ID: !Ref AppSecret
+        LLM_PROVIDER: !Ref LlmProvider
+        BEDROCK_MODEL: !Ref BedrockModel
+
+Resources:
+  # Fill in real values after deploy (console or `aws secretsmanager put-secret-value`).
+  AppSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      SecretString: '{"openai_api_key":"","gladly_api_token":"","gladly_signing_key":"","shopify_token":"","api_token":""}'
+
+  Tickets:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: id, AttributeType: S }]
+      KeySchema: [{ AttributeName: id, KeyType: HASH }]
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+
+  JobsDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600  # 14 days to inspect and redrive
+
+  Jobs:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 540  # >= 6x worker timeout, per AWS guidance for Lambda event sources
+      RedrivePolicy: { deadLetterTargetArn: !GetAtt JobsDLQ.Arn, maxReceiveCount: 3 }
+
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      MemorySize: 512
+      Timeout: 15
+      ImageConfig: { Command: ["app.api.handler"] }
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Tickets }
+        - SQSSendMessagePolicy: { QueueName: !GetAtt Jobs.QueueName }
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref AppSecret }
+      Events:
+        Http:
+          Type: HttpApi
+          Properties: { Path: /{proxy+}, Method: ANY }
+    Metadata: &image
+      Dockerfile: Dockerfile
+      DockerContext: .
+      DockerTag: v1
+
+  WorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      MemorySize: 2048  # more memory = more CPU for embeddings
+      Timeout: 90
+      ImageConfig: { Command: ["app.worker.handler"] }
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Tickets }
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref AppSecret }
+        - Statement:
+            - Effect: Allow
+              Action: [bedrock:InvokeModel]
+              Resource: "*"
+      Events:
+        Queue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt Jobs.Arn
+            BatchSize: 5
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            ScalingConfig: { MaximumConcurrency: 10 }  # protects LLM rate limits and Gladly's API
+    Metadata: *image
+
+Outputs:
+  ApiUrl:
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  WebhookUrl:
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/webhooks/gladly"
+  DeadLetterQueue:
+    Value: !Ref JobsDLQ

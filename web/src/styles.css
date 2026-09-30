@@ -1,0 +1,31 @@
+:root {
+  --bg: #f7f7f5;
+  --card: #fff;
+  --text: #1d1d1b;
+  --muted: #6b6b66;
+  --accent: #2f6fed;
+  --warn: #d9480f;
+  --ok: #2b8a3e;
+  font-family: system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+body { margin: 0; }
+main { max-width: 760px; margin: 0 auto; padding: 24px 16px; }
+h1 { font-size: 1.4rem; }
+form { display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px; }
+textarea { font: inherit; padding: 10px; border: 1px solid #ccc; border-radius: 8px; }
+button { font: inherit; padding: 8px 14px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer; align-self: flex-start; }
+button.secondary { background: #e4e4e0; color: var(--text); }
+.card { background: var(--card); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; border-left: 4px solid #ccc; }
+.card.drafted, .card.approved { border-left-color: var(--ok); }
+.card.escalated, .card.rejected { border-left-color: var(--warn); }
+.card header { display: flex; gap: 8px; align-items: center; }
+.badge { font-size: 0.75rem; padding: 2px 8px; border-radius: 99px; background: #eee; }
+blockquote { margin: 10px 0; color: var(--muted); }
+.reply { white-space: pre-wrap; }
+.meter { height: 4px; background: #eee; border-radius: 2px; margin: 8px 0; }
+.meter div { height: 100%; background: var(--accent); border-radius: 2px; }
+small { color: var(--muted); }
+.actions { display: flex; gap: 8px; margin-top: 10px; }
+.error { color: var(--warn); }
