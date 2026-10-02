@@ -9,13 +9,12 @@ import asyncio
 import secrets
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 from pydantic import ValidationError
 
-from app.integrations import verify_gladly_request
-from app.models import GladlyWebhook, Job, NewTicket, Review, Ticket
+from app.models import GladlyWebhook, Job, MessageReceived, NewTicket, Review, Ticket
 from app.observability import configure_logging, record_event
 from app.services import Services, get_services
 from app.worker import process_job
@@ -37,14 +36,16 @@ async def require_token(authorization: str = Header(default=""), svc: Services =
 
 
 async def verified_gladly_body(request: Request, svc: Services = Depends(get_services)) -> bytes:
-    """Reject anything not signed by Gladly *before* parsing it."""
-    body = await request.body()
-    key = svc.settings.gladly_signing_key.get_secret_value().encode()
-    if not key or not verify_gladly_request(
-        key, request.method, request.url.path, dict(request.query_params), request.headers, body
-    ):
-        raise HTTPException(401, "Invalid Gladly signature")
-    return body
+    """Reject anything without our shared token *before* parsing it.
+
+    Gladly webhooks don't sign payloads; they authenticate with Basic auth or custom headers
+    configured on the webhook. We use a header token. Fails closed when no token is configured.
+    """
+    expected = svc.settings.gladly_webhook_token.get_secret_value().encode()
+    provided = request.headers.get("x-webhook-token", "").encode()
+    if not expected or not secrets.compare_digest(provided, expected):
+        raise HTTPException(401, "Invalid webhook token")
+    return await request.body()
 
 
 async def enqueue(job: Job, svc: Services, background: BackgroundTasks) -> None:
@@ -64,18 +65,22 @@ async def health() -> dict:
 
 @app.post("/webhooks/gladly", status_code=202)
 async def gladly_webhook(
-    background: BackgroundTasks, body: bytes = Depends(verified_gladly_body), svc: Services = Depends(get_services)
+    response: Response, background: BackgroundTasks,
+    body: bytes = Depends(verified_gladly_body), svc: Services = Depends(get_services),
 ) -> dict:
     try:
         event = GladlyWebhook.model_validate_json(body)
+        if event.type == "PING":  # sent on webhook create/update; anything but 200 fails the setup
+            response.status_code = 200
+            return {"status": "pong"}
+        if event.type != "CONTACT/MESSAGE_RECEIVED":
+            return {"status": "ignored"}
+        c = MessageReceived.model_validate(event.content)
     except ValidationError as e:
         raise HTTPException(422, e.errors(include_url=False)) from e
-    if event.type != "CONVERSATION_ITEM/CREATED":
-        return {"status": "ignored"}
 
-    c = event.content
-    ticket = Ticket(id=c.conversation_item_id, conversation_id=c.conversation_id, customer_id=c.customer_id)
-    if not await svc.store.create(ticket):  # at-least-once delivery: dedupe on the item id
+    ticket = Ticket(id=c.message_id, conversation_id=c.conversation_id, customer_id=c.customer_id)
+    if not await svc.store.create(ticket):  # at-least-once delivery: dedupe on the message id
         return {"status": "duplicate", "ticket_id": ticket.id}
     await enqueue(Job(ticket_id=ticket.id, conversation_id=c.conversation_id, customer_id=c.customer_id), svc, background)
     return {"status": "queued", "ticket_id": ticket.id}

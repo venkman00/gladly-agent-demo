@@ -13,17 +13,19 @@ class GladlyModel(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="ignore")
 
 
-class WebhookContent(GladlyModel):
+class GladlyWebhook(GladlyModel):
+    """Envelope only. PING carries little more than `type`, so the content is validated per event type."""
+
+    type: str  # e.g. CONTACT/MESSAGE_RECEIVED, PING
+    content: dict = Field(default_factory=dict)
+
+
+class MessageReceived(GladlyModel):
+    """CONTACT/MESSAGE_RECEIVED content. IDs only, by design: the text is fetched via the API."""
+
     customer_id: str
     conversation_id: str
-    conversation_item_id: str
-
-
-class GladlyWebhook(GladlyModel):
-    id: str
-    type: str  # e.g. CONVERSATION_ITEM/CREATED
-    created_at: datetime
-    content: WebhookContent
+    message_id: str  # a conversation item id: GET /api/v1/conversation-items/{itemId}
 
 
 class Job(BaseModel):

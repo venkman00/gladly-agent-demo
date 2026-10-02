@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     gladly_base_url: str = ""  # e.g. https://acme.gladly.com
     gladly_api_user: str = ""  # agent email the API token belongs to
     gladly_api_token: SecretStr = SecretStr("")  # (secret)
-    gladly_signing_key: SecretStr = SecretStr("")  # (secret) verifies inbound Gladly requests
+    gladly_webhook_token: SecretStr = SecretStr("")  # (secret) sent by Gladly in the X-Webhook-Token header
 
     # Shopify (order lookups via GraphQL)
     shopify_shop: str = ""  # e.g. acme.myshopify.com

@@ -27,7 +27,7 @@ async def process_job(job: Job, svc: Services) -> None:
         return
 
     started = time.perf_counter()
-    message = job.message or await svc.gladly.get_customer_message(job.conversation_id, job.ticket_id)
+    message = job.message or await svc.gladly.get_customer_message(job.ticket_id)
     if message is None:
         await svc.store.save(ticket.model_copy(update={"status": "ignored"}))
         return

@@ -6,7 +6,7 @@ About 1,000 lines of Python and 140 of TypeScript. Built for the **20% of the wo
 
 ```
 Gladly ──webhook──▶ API Lambda (FastAPI) ──▶ SQS ──▶ Worker Lambda ──▶ Gladly note
-         signed      verify · dedupe · 202     │       │  agent loop:
+       IDs + token   verify · dedupe · 202     │       │  agent loop:
                             │                  DLQ     │   search_kb (BGE embeddings)
                             ▼                          │   lookup_order (Shopify GraphQL)
                         DynamoDB ◀─────────────────────┘   respond (Pydantic-validated)
@@ -19,7 +19,7 @@ Gladly ──webhook──▶ API Lambda (FastAPI) ──▶ SQS ──▶ Worke
 | Skill | Where | The idea to explain |
 |---|---|---|
 | FastAPI, async, Pydantic | `app/api.py`, `app/models.py` | Validate at every boundary. `async` for I/O, `to_thread` for sync SDKs and CPU work |
-| Pytest | `tests/` | 9 tests on the risky parts: signing, idempotency, guardrails, self-correction. Fakes, no network |
+| Pytest | `tests/` | 10 tests on the risky parts: webhook auth, PING, idempotency, the Gladly item fetch, guardrails, self-correction. Fakes, no network |
 | Lambda + SQS | `app/worker.py`, `template.yaml` | Webhook returns 202 fast. Worker retries, partial batch failures, DLQ |
 | DynamoDB | `app/store.py` | Conditional write = idempotency under at-least-once delivery |
 | Secrets Manager | `app/config.py` | Load once per cold start, cache, never in env vars or code |
@@ -28,7 +28,7 @@ Gladly ──webhook──▶ API Lambda (FastAPI) ──▶ SQS ──▶ Worke
 | LLM integration / agents | `app/agent.py` | Bounded tool loop. Final answer *is* a tool call validated by Pydantic |
 | BGE embeddings / similarity | `app/knowledge.py` | Normalized vectors → cosine = dot product. Query-side instruction prefix |
 | REST / GraphQL integrations | `app/integrations.py` | Timeouts, retry only 429/5xx, Retry-After. GraphQL errors arrive on HTTP 200 |
-| Gladly | `app/integrations.py`, `app/api.py` | Request signing (verified against Gladly's docs vector), notes API, loop prevention |
+| Gladly | `app/integrations.py`, `app/api.py` | Webhook contract from Gladly's docs (`CONTACT/MESSAGE_RECEIVED`, IDs only, PING), header-token auth, conversation-items + notes APIs, loop prevention |
 | React + TypeScript | `web/src/` | Typed API client mirroring the Pydantic models. Human-in-the-loop review |
 | New Relic NRQL | `app/observability.py` + below | One wide event per ticket answers most production questions |
 | K6 | `load/k6.js` | Load-test the edge, with a p95 threshold as a CI gate |
@@ -46,7 +46,7 @@ Gladly ──webhook──▶ API Lambda (FastAPI) ──▶ SQS ──▶ Worke
 
 **Deliberately left out** (add when the data says so): vector database (a numpy matrix handles hundreds of articles), streaming, WebSockets (polling is fine), auto-send, multi-agent orchestration, LangChain, a GSI for listing tickets, SAML implementation (belongs at the load balancer/IdP).
 
-**Real-world gotchas handled:** Gladly's `CONVERSATION_ITEM/CREATED` also fires for the bot's own notes, so only `initiator.type == CUSTOMER` items are processed (otherwise the bot replies to itself forever). The Bedrock Converse API needs strictly alternating roles, so parallel tool results are merged into one turn. Signature checks run *before* parsing, and stale timestamps are rejected to stop replays.
+**Real-world gotchas handled:** Gladly webhook payloads deliberately carry only IDs, so the worker fetches the message from `/conversation-items/{messageId}` and only processes `initiator.type == CUSTOMER` items (a bot that processes its own output replies to itself forever). Gladly sends a `PING` when a webhook is created and only saves it on a 200. It retries failed deliveries 4 times over an hour, then deactivates the webhook. Gladly webhooks aren't signed, so a shared header token is checked (constant-time, fail closed) *before* parsing. The Bedrock Converse API needs strictly alternating roles, so parallel tool results are merged into one turn.
 
 ## Run it locally
 
@@ -57,7 +57,7 @@ cp .env.example .env                   # add OPENAI_API_KEY (or set LLM_PROVIDER
 uv venv && uv pip install -e ".[dev,embeddings]"
 .venv/bin/uvicorn app.api:app --reload # :8000 (first ticket loads the embedding model)
 cd web && npm install && npm run dev   # :5173
-.venv/bin/pytest -q                    # 9 tests, <1s, no network
+.venv/bin/pytest -q                    # 10 tests, <1s, no network
 ```
 
 Try: *"Where is my order #1002?"*, *"How long do refunds take?"*, *"Do you sell gift cards?"* (should escalate: not in KB), *"This is the third time I'm asking, I'm filing a chargeback"* (should escalate: angry/legal).
@@ -69,9 +69,9 @@ sam build && sam deploy --guided       # builds the image, creates queue/DLQ/tab
 aws secretsmanager put-secret-value --secret-id <AppSecret> --secret-string file://secrets.json
 ```
 
-In Gladly: point a webhook for `CONVERSATION_ITEM/CREATED` at the `WebhookUrl` output, and use an API token from a dedicated bot agent user. For Bedrock, enable model access in your region and set `BedrockModel` to the model or inference-profile ID shown in the console.
+In Gladly (Settings > Webhooks, or the Webhooks API): create a webhook for `CONTACT/MESSAGE_RECEIVED` pointing at the `WebhookUrl` output, with a custom header `X-Webhook-Token` set to the `gladly_webhook_token` secret. Use an API token from a dedicated bot agent user for `gladly_api_token`, and set `gladly_base_url` / `gladly_api_user` in the secret too. For Bedrock, enable model access in your region and set `BedrockModel` to the model or inference-profile ID shown in the console.
 
-**Before production, verify against your Gladly org:** the webhook payload fields, whether webhooks are signed with the same `Gladly-Authorization` scheme (Gladly documents it for Lookup Adaptors; `test_signature_matches_gladly_docs_vector` proves the algorithm), and the notes request body.
+**Before production, test in a Gladly sandbox:** the integration follows Gladly's published REST docs (webhook events and payloads, conversation items, notes), but hasn't been run against a live org. In particular, confirm that the PING body has `type: "PING"` and that customer-message items carry the text where `get_customer_message` looks for it.
 
 ## NRQL
 
@@ -93,7 +93,7 @@ Alert on: DLQ depth > 0, p95 `latencyMs` > 20s, and approval rate dropping week 
 ## Video outline (≈12 min)
 
 1. **Problem → architecture** (1 min): the diagram above. Why drafts instead of auto-replies.
-2. **Edge** (2 min): `api.py` webhook. Signature before parse, the replay window, dedupe, 202. Show the tests.
+2. **Edge** (2 min): `api.py` webhook. Token before parse, PING, IDs-only payloads, dedupe, 202. Show the tests.
 3. **Brain** (4 min): `agent.py`. The loop, tools, `respond` as structured output, guardrails. Then `knowledge.py`: BGE, cosine, and the threshold calibration story.
 4. **Providers** (1 min): `llm.py`. Switch `LLM_PROVIDER` live.
 5. **Reliability** (2 min): `worker.py` + `template.yaml`. At-least-once delivery, partial batch failures, DLQ, `MaximumConcurrency`, the self-reply loop bug.

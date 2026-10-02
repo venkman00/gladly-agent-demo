@@ -29,7 +29,7 @@ Resources:
   AppSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
-      SecretString: '{"openai_api_key":"","gladly_api_token":"","gladly_signing_key":"","shopify_token":"","api_token":""}'
+      SecretString: '{"openai_api_key":"","gladly_api_token":"","gladly_webhook_token":"","shopify_token":"","api_token":""}'
 
   Tickets:
     Type: AWS::DynamoDB::Table
